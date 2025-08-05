@@ -8,8 +8,9 @@ import geopandas as gpd
 import xarray as xr
 from tilecache import XarrayCacheManager
 from earthengine import init_ee, init_ee_from_credentials
-
+import time
 # Initialize logging
+import requests
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,6 @@ class Sentinel2GEEExporter:
                 .filterMetadata("CLOUDY_PIXEL_PERCENTAGE", "less_than", max_cloud_cover)
             )
             s2_ids.update(collection.aggregate_array("system:index").getInfo())
-
         logger.info(f"Found {len(s2_ids)} Sentinel-2 tiles.")
         return s2_ids
 
@@ -68,51 +68,76 @@ class Sentinel2GEEExporter:
             self,
             s2_id: str,
             bands_mapping: Dict[str, str] = {"B2": "blue", "B3": "green", "B4": "red", "B8": "nir"},
+            max_retries: int = 3,
+            chunk_size: int = 8192
     ) -> Optional[Path]:
-        """Download and process a single Sentinel-2 tile."""
-        cache_file = self.cache_dir / f"gee-s2srh-{s2_id}.nc"
+        """Download Sentinel-2 tile using EE's getDownloadURL with improved error handling."""
+        cache_file = self.cache_dir / f"{s2_id}.tif"
+
         if cache_file.exists():
             logger.debug(f"Skipping {s2_id} (already cached)")
-            return None
-
-        try:
-            img = ee.Image(f"COPERNICUS/S2_SR_HARMONIZED/{s2_id}")
-            img = img.select(list(bands_mapping.keys()))
-
-            ds = xr.open_dataset(
-                img,
-                engine="ee",
-                geometry=img.geometry(),
-                crs=img.select(0).projection().crs().getInfo(),
-                scale=10,
-            ).load()
-
-            # Post-processing
-            ds = (
-                ds.isel(time=0)
-                .drop_vars("time")
-                .rename({"X": "x", "Y": "y"})
-                .transpose("y", "x")
-                .rename(bands_mapping)
-            )
-            ds = ds.odc.assign_crs(ds.attrs["crs"])
-
-            # Save to cache
-            ds.to_netcdf(cache_file)
-            logger.info(f"Exported {s2_id} to {cache_file}")
             return cache_file
 
-        except Exception as e:
-            logger.error(f"Failed to process {s2_id}: {str(e)}")
-            return None
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Attempt {attempt + 1} for {s2_id}")
+
+                # Get the image and select bands
+                img = ee.Image(f"COPERNICUS/S2_SR_HARMONIZED/{s2_id}")
+                img = img.select(list(bands_mapping.keys()))
+
+                # Get the native projection
+                projection = img.select(0).projection()
+                scale = projection.nominalScale().getInfo()
+
+                # Get download URL with native projection
+                url = img.getDownloadURL({
+                    'name': f'S2_{s2_id}',
+                    'scale': scale,
+                    'crs': projection.crs(),
+                    'region': img.geometry(),
+                    'filePerBand': False,
+                    'format': 'GEO_TIFF'
+                })
+
+                # Download with streaming and timeout
+                with requests.get(url, stream=True, timeout=30) as response:
+                    response.raise_for_status()
+
+                    # Save to temporary file first
+                    temp_file = cache_file.with_suffix('.tmp')
+                    with open(temp_file, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=chunk_size):
+                            if chunk:  # filter out keep-alive chunks
+                                f.write(chunk)
+
+                    # Rename temp file to final name after successful download
+                    temp_file.rename(cache_file)
+
+                    logger.info(f"Successfully downloaded {s2_id} to {cache_file}")
+                    return cache_file
+
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Download failed (attempt {attempt + 1}): {str(e)}")
+                if attempt == max_retries - 1:
+                    logger.error(f"Max retries exceeded for {s2_id}")
+                    return None
+                time.sleep(5 * (attempt + 1))  # Exponential backoff
+
+            except Exception as e:
+                logger.error(f"Unexpected error processing {s2_id}: {str(e)}")
+                return None
+
+        return None
 
     def export_tiles(
             self,
             s2_ids: Set[str],
             bands_mapping: Dict[str, str] = {"B2": "blue", "B3": "green", "B4": "red", "B8": "nir"},
     ) -> Dict[str, Path]:
-        """Download multiple tiles in parallel."""
+        """Download multiple tiles in parallel with improved progress tracking."""
         results = {}
+        total = len(s2_ids)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
@@ -120,16 +145,18 @@ class Sentinel2GEEExporter:
                 for s2_id in s2_ids
             }
 
-            for future in concurrent.futures.as_completed(futures):
+            for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
                 s2_id = futures[future]
                 try:
                     result = future.result()
                     if result:
                         results[s2_id] = result
+                    logger.info(f"Progress: {i}/{total} tiles processed")
                 except Exception as e:
                     logger.error(f"Error processing {s2_id}: {str(e)}")
 
         return results
+
 
 
 def main():
@@ -159,8 +186,6 @@ def download(aoi_path, start_date, end_date, cache_dir, max_cloud_cover=20, max_
 
     # --- Execution ---
     exporter = Sentinel2GEEExporter(cache_dir, max_workers)
-
-    new_aoi = load_geojson_directly(aoi_path)
 
     # 1. Load AOI and find matching tiles
     aoi = gpd.read_file(aoi_path, driver='GeoJSON')
