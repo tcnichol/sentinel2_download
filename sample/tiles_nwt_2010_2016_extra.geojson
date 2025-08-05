@@ -1,0 +1,10 @@
+{
+"type": "FeatureCollection",
+"name": "tiles_nwt_2011_2021",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3413" } },
+"features": [
+{ "type": "Feature", "properties": { "tile_name": "tile_16_41_1_6" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ -2500000.0, 50000.0 ], [ -2500000.0, 60000.0 ], [ -2490000.0, 60000.0 ], [ -2490000.0, 50000.0 ], [ -2500000.0, 50000.0 ] ] ] } },
+{ "type": "Feature", "properties": { "tile_name": "tile_16_41_2_6" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ -2490000.0, 50000.0 ], [ -2490000.0, 60000.0 ], [ -2480000.0, 60000.0 ], [ -2480000.0, 50000.0 ], [ -2490000.0, 50000.0 ] ] ] } },
+{ "type": "Feature", "properties": { "tile_name": "tile_16_41_3_6" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ -2480000.0, 50000.0 ], [ -2480000.0, 60000.0 ], [ -2470000.0, 60000.0 ], [ -2470000.0, 50000.0 ], [ -2480000.0, 50000.0 ] ] ] } }
+]
+}

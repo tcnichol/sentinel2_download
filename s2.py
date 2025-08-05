@@ -1,23 +1,44 @@
 import logging
+import os
 from pathlib import Path
 from typing import Set, Dict, Optional
 import concurrent.futures
 import ee
 import geopandas as gpd
 import xarray as xr
-from darts_utils.tilecache import XarrayCacheManager
+from tilecache import XarrayCacheManager
+from earthengine import init_ee, init_ee_from_credentials
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+import json
+from shapely.geometry import shape
+
+
+def load_geojson_directly(path: Path) -> gpd.GeoDataFrame:
+    with open(path) as f:
+        data = json.load(f)
+
+    features = []
+    for feature in data['features']:
+        features.append({
+            'tile_name': feature['properties']['tile_name'],
+            'geometry': shape(feature['geometry'])
+        })
+
+    return gpd.GeoDataFrame(
+        features,
+        crs=data['crs']['properties']['name']  # "urn:ogc:def:crs:EPSG::3413"
+    )
 
 class Sentinel2GEEExporter:
     def __init__(self, cache_dir: Path = Path("gee_cache"), max_workers: int = 4):
         self.cache_dir = cache_dir
         self.max_workers = max_workers
         self.cache_dir.mkdir(exist_ok=True)
-        ee.Initialize()
+        # ee.Initialize()
 
     def get_s2_tile_ids(
             self,
@@ -132,6 +153,64 @@ def main():
 
     logger.info(f"Successfully downloaded {len(results)} tiles to {cache_dir}")
 
+def download(aoi_path, start_date, end_date, cache_dir, max_cloud_cover=20, max_workers=4):
+
+    # --- Configuration ---
+
+    # --- Execution ---
+    exporter = Sentinel2GEEExporter(cache_dir, max_workers)
+
+    new_aoi = load_geojson_directly(aoi_path)
+
+    # 1. Load AOI and find matching tiles
+    aoi = gpd.read_file(aoi_path, driver='GeoJSON')
+
+    # Validate the GeoDataFrame
+    if not isinstance(aoi, gpd.GeoDataFrame):
+        raise ValueError("AOI file did not load as a GeoDataFrame")
+    if aoi.empty:
+        raise ValueError("AOI file contains no features")
+
+    logger.info(f"Loaded AOI with {len(aoi)} features from {aoi_path}")
+
+    s2_ids = exporter.get_s2_tile_ids(aoi, start_date, end_date, max_cloud_cover)
+
+    # 2. Download all tiles
+    results = exporter.export_tiles(s2_ids)
+
+    logger.info(f"Successfully downloaded {len(results)} tiles to {cache_dir}")
+
 
 if __name__ == "__main__":
-    main()
+
+    credentials_path = os.path.join(os.getcwd(), 'credentials.json')
+    if os.path.exists(credentials_path):
+        print("We have credentials.json, initializing Earth Engine with it")
+        init_ee_from_credentials(credentials_path=Path(credentials_path),
+                                 project="uiuc-ncsa-permafrost",
+                                 use_highvolume=True)
+    else:
+        print("We do not have credentails, do nothing")
+
+    aoi_location = os.path.join(os.getcwd(), 'sample', 'tiles_nwt_2010_2016_extra.geojson')
+    print(os.path.exists(aoi_location), 'the file exists')
+    aoi_path = Path(aoi_location)  # GeoJSON file with AOI polygons
+    start_date = "2024-07"  # YYYY-MM-DD
+    end_date = "2024-09"  # YYYY-MM-DD
+    cache_location = os.path.join(os.getcwd(), 'cache')
+    cache_dir = Path(cache_location)
+
+    try:
+        download(aoi_path=aoi_location,
+                 start_date=start_date,
+                 end_date=end_date,
+                 cache_dir=cache_dir)
+    except Exception as e:
+        print("An error occurred during download:", e)
+
+    # try:
+    #     init_ee(project="uiuc-ncsa-permafrost", use_highvolume=True)
+    # except Exception as e:
+    #     print("Failed to initialize Earth Engine:", e)
+
+    # main()

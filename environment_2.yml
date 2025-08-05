@@ -1,0 +1,28 @@
+name: sentinel2-gee-2
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core dependencies
+  - python=3.12
+  - earthengine-api>=0.1.343
+  - geopandas>=0.14.0
+  - xarray>=2023.12.0
+  - rioxarray>=0.16.0  # Required for xarray<->rasterio integration
+
+  # Supporting libraries
+  - pandas>=2.1.0
+  - numpy>=1.26.0
+  - netcdf4>=1.6.4  # For NetCDF file handling
+  - dask>=2023.12.0  # Used by xarray for parallel processing
+  - gdal>=3.7.0  # Geospatial data processing
+
+  # Parallel processing
+  - concurrent-log-handler>=0.9.23  # Better logging for parallel ops
+
+  # Visualization (optional)
+  - matplotlib>=3.8.0
+  - cartopy>=0.22.0
+
+  # Development tools
+  - pip>=23.3.0
